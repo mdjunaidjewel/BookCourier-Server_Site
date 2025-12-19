@@ -1,4 +1,3 @@
-// server.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -9,7 +8,12 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // ---------------- MIDDLEWARES ----------------
-app.use(cors());
+app.use(
+  cors({
+    origin: ["http://localhost:5173"], // তোমার frontend URL
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // ---------------- MONGODB CONNECTION ----------------
@@ -29,7 +33,7 @@ async function connectDB() {
 
 // USER SCHEMA
 const userSchema = new mongoose.Schema({
-  name: String,
+  name: { type: String, default: "User" },
   email: { type: String, required: true, unique: true },
   role: { type: String, enum: ["user", "librarian", "admin"], default: "user" },
   createdAt: { type: Date, default: Date.now },
@@ -49,20 +53,26 @@ const bookSchema = new mongoose.Schema({
     enum: ["published", "unpublished"],
     default: "published",
   },
+  addedByEmail: String,
+  addedByName: String,
   createdAt: { type: Date, default: Date.now },
 });
 
 // ORDER SCHEMA
 const orderSchema = new mongoose.Schema({
-  bookId: { type: String, required: true },
+  bookId: { type: mongoose.Schema.Types.ObjectId, ref: "Book", required: true },
   bookTitle: { type: String, required: true },
   name: String,
   email: String,
   phone: String,
   address: String,
   price: Number,
-  status: { type: String, default: "pending" }, // pending / completed / cancelled
-  paymentStatus: { type: String, default: "unpaid" }, // unpaid / paid
+  status: {
+    type: String,
+    enum: ["pending", "completed", "cancelled"],
+    default: "pending",
+  },
+  paymentStatus: { type: String, enum: ["unpaid", "paid"], default: "unpaid" },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -78,12 +88,21 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 app.get("/", (req, res) => res.send("📚 BookCourier Backend Running"));
 
 // -------- USERS --------
+
+// Register / Add User
 app.post("/api/users", async (req, res) => {
   const { name, email, role } = req.body;
+  if (!email) return res.status(400).send({ error: "Email is required" });
+
   try {
-    const existing = await User.findOne({ email });
+    let existing = await User.findOne({ email });
     if (existing) return res.send(existing);
-    const user = new User({ name, email, role: role || "user" });
+
+    const user = new User({
+      name: name || "User",
+      email,
+      role: role || "user",
+    });
     const result = await user.save();
     res.send(result);
   } catch (err) {
@@ -91,10 +110,42 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
+// Get user by email
 app.get("/api/users/:email", async (req, res) => {
   try {
     const user = await User.findOne({ email: req.params.email });
     res.send(user);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+// Get all users (Admin)
+app.get("/api/users", async (req, res) => {
+  try {
+    const users = await User.find();
+    res.send(users);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+// Update user role
+app.patch("/api/users/:id", async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  if (!["user", "librarian", "admin"].includes(role))
+    return res.status(400).send({ error: "Invalid role" });
+
+  try {
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true }
+    );
+    if (!updatedUser) return res.status(404).send({ error: "User not found" });
+    res.send(updatedUser);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
@@ -122,30 +173,35 @@ app.get("/api/books/:id", async (req, res) => {
   }
 });
 
-// Admin routes
+// Add Book
 app.post("/api/books", async (req, res) => {
   try {
     const book = new Book(req.body);
-    res.send(await book.save());
+    const result = await book.save();
+    res.send(result);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
 
+// Update Book
 app.patch("/api/books/:id", async (req, res) => {
   try {
-    res.send(
-      await Book.findByIdAndUpdate(req.params.id, req.body, { new: true })
-    );
+    const updatedBook = await Book.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    });
+    res.send(updatedBook);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
 
+// Delete Book
 app.delete("/api/books/:id", async (req, res) => {
   try {
-    await Book.findByIdAndDelete(req.params.id);
-    res.send({ message: "Book deleted" });
+    const deletedBook = await Book.findByIdAndDelete(req.params.id);
+    if (deletedBook) await Order.deleteMany({ bookId: req.params.id });
+    res.send({ message: "Book and related orders deleted" });
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
@@ -155,12 +211,14 @@ app.delete("/api/books/:id", async (req, res) => {
 app.post("/api/orders", async (req, res) => {
   try {
     const order = new Order(req.body);
-    res.send(await order.save());
+    const result = await order.save();
+    res.send(result);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
 
+// Get user orders
 app.get("/api/orders/user/:email", async (req, res) => {
   try {
     const orders = await Order.find({ email: req.params.email });
@@ -170,6 +228,7 @@ app.get("/api/orders/user/:email", async (req, res) => {
   }
 });
 
+// Update order (status / payment)
 app.patch("/api/orders/:id", async (req, res) => {
   try {
     const updatedOrder = await Order.findByIdAndUpdate(
@@ -178,7 +237,6 @@ app.patch("/api/orders/:id", async (req, res) => {
       { new: true }
     );
 
-    // Decrease book quantity if payment successful
     if (req.body.paymentStatus === "paid" && req.body.status === "completed") {
       await Book.findByIdAndUpdate(updatedOrder.bookId, {
         $inc: { quantity: -1 },
@@ -210,6 +268,6 @@ app.post("/api/create-payment-intent", async (req, res) => {
 });
 
 // ---------------- START SERVER ----------------
-connectDB().then(() =>
-  app.listen(port, () => console.log(`🚀 Server running on port ${port}`))
-);
+connectDB().then(() => {
+  app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
+});
