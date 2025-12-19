@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY); // Add Stripe
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -32,8 +33,6 @@ async function connectDB() {
 }
 
 // ---------------- SCHEMAS ----------------
-
-// Book Schema
 const bookSchema = new mongoose.Schema({
   title: String,
   author: String,
@@ -43,7 +42,6 @@ const bookSchema = new mongoose.Schema({
   quantity: Number,
 });
 
-// Order Schema
 const orderSchema = new mongoose.Schema({
   bookId: String,
   bookTitle: String,
@@ -112,6 +110,38 @@ app.get("/api/orders", async (req, res) => {
 app.get("/api/orders/user/:email", async (req, res) => {
   const orders = await Order.find({ email: req.params.email });
   res.send(orders);
+});
+
+// 🔹 Get single order by ID
+app.get("/api/orders/:id", async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  res.send(order);
+});
+
+// 🔹 Stripe Payment Intent
+app.post("/api/create-payment-intent", async (req, res) => {
+  try {
+    const { amount } = req.body; // Amount in cents, e.g., $10 = 1000
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency: "usd",
+    });
+    res.send({ clientSecret: paymentIntent.client_secret });
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({ error: error.message });
+  }
+});
+
+// 🔹 Update order payment status after successful payment
+app.patch("/api/orders/:id", async (req, res) => {
+  const { paymentStatus, status } = req.body;
+  const order = await Order.findByIdAndUpdate(
+    req.params.id,
+    { paymentStatus, status },
+    { new: true }
+  );
+  res.send(order);
 });
 
 // ---------------- START SERVER ----------------
