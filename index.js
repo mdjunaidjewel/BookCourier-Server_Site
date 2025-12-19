@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY); // Add Stripe
+const Stripe = require("stripe");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -13,13 +13,8 @@ app.use(express.json());
 
 // ---------------- MONGODB CONNECTION ----------------
 const uri = process.env.MONGODB_URI;
-
 const clientOptions = {
-  serverApi: {
-    version: "1",
-    strict: true,
-    deprecationErrors: true,
-  },
+  serverApi: { version: "1", strict: true, deprecationErrors: true },
 };
 
 async function connectDB() {
@@ -49,104 +44,97 @@ const orderSchema = new mongoose.Schema({
   email: String,
   phone: String,
   address: String,
-  status: {
-    type: String,
-    default: "pending",
-  },
-  paymentStatus: {
-    type: String,
-    default: "unpaid",
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
+  status: { type: String, default: "pending" },
+  paymentStatus: { type: String, default: "unpaid" },
+  createdAt: { type: Date, default: Date.now },
 });
 
-// ---------------- MODELS ----------------
 const Book = mongoose.model("Book", bookSchema);
 const Order = mongoose.model("Order", orderSchema);
 
 // ---------------- ROUTES ----------------
+app.get("/", (req, res) => res.send("📚 BookCourier Backend Running"));
 
-// Test route
-app.get("/", (req, res) => {
-  res.send("📚 BookCourier Backend Running");
-});
-
-// 🔹 Get all books
+// Books
 app.get("/api/books", async (req, res) => {
   const books = await Book.find();
   res.send(books);
 });
-
-// 🔹 Get single book
 app.get("/api/books/:id", async (req, res) => {
   const book = await Book.findById(req.params.id);
   res.send(book);
 });
-
-// 🔹 Add book (Librarian)
 app.post("/api/books", async (req, res) => {
   const book = new Book(req.body);
   const result = await book.save();
   res.send(result);
 });
 
-// 🔹 Place order
+// Orders
 app.post("/api/orders", async (req, res) => {
   const order = new Order(req.body);
   const result = await order.save();
   res.send(result);
 });
-
-// 🔹 Get all orders (Admin)
 app.get("/api/orders", async (req, res) => {
   const orders = await Order.find();
   res.send(orders);
 });
-
-// 🔹 Get user orders by email
 app.get("/api/orders/user/:email", async (req, res) => {
   const orders = await Order.find({ email: req.params.email });
   res.send(orders);
 });
-
-// 🔹 Get single order by ID
 app.get("/api/orders/:id", async (req, res) => {
-  const order = await Order.findById(req.params.id);
-  res.send(order);
-});
-
-// 🔹 Stripe Payment Intent
-app.post("/api/create-payment-intent", async (req, res) => {
   try {
-    const { amount } = req.body; // Amount in cents, e.g., $10 = 1000
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount,
-      currency: "usd",
-    });
-    res.send({ clientSecret: paymentIntent.client_secret });
-  } catch (error) {
-    console.log(error);
-    res.status(500).send({ error: error.message });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).send({ message: "Order not found" });
+    res.send(order);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
   }
 });
 
-// 🔹 Update order payment status after successful payment
+// ---------------- Stripe ----------------
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Create Payment Intent
+app.post("/api/create-payment-intent", async (req, res) => {
+  const { amount } = req.body; // amount in cents
+  try {
+    if (!amount || amount <= 0) {
+      return res.status(400).send({ error: "Invalid amount" });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency: "usd",
+      automatic_payment_methods: { enabled: true },
+    });
+
+    res.send({ clientSecret: paymentIntent.client_secret });
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+// Update order after payment
 app.patch("/api/orders/:id", async (req, res) => {
-  const { paymentStatus, status } = req.body;
-  const order = await Order.findByIdAndUpdate(
-    req.params.id,
-    { paymentStatus, status },
-    { new: true }
-  );
-  res.send(order);
+  try {
+    const { paymentStatus, status } = req.body;
+    const updatedOrder = await Order.findByIdAndUpdate(
+      req.params.id,
+      { paymentStatus, status },
+      { new: true }
+    );
+    if (!updatedOrder)
+      return res.status(404).send({ message: "Order not found" });
+    res.send(updatedOrder);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
 });
 
 // ---------------- START SERVER ----------------
-connectDB().then(() => {
-  app.listen(port, () => {
-    console.log(`🚀 Server running on port ${port}`);
-  });
-});
+connectDB().then(() =>
+  app.listen(port, () => console.log(`🚀 Server running on port ${port}`))
+);
