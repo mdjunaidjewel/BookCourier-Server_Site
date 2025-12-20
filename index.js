@@ -61,6 +61,7 @@ const bookSchema = new mongoose.Schema({
     default: "published",
   },
   addedByEmail: String,
+  addedByName: String,
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -227,6 +228,46 @@ app.get(
   }
 );
 
+// DELETE a book (Admin only)
+app.delete(
+  "/api/books/:id",
+  verifyFirebaseToken,
+  verifyRole(["admin"]),
+  async (req, res) => {
+    try {
+      const book = await Book.findById(req.params.id);
+      if (!book) return res.status(404).send({ error: "Book not found" });
+
+      // 1️⃣ Delete all orders of this book
+      await Order.deleteMany({ bookId: book._id });
+
+      // 2️⃣ Delete the book itself
+      await book.deleteOne();
+
+      res.send({ message: "Book and its orders deleted successfully" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to delete book" });
+    }
+  }
+);
+
+// GET all users - Admin only
+app.get(
+  "/api/users",
+  verifyFirebaseToken,
+  verifyRole(["admin"]),
+  async (req, res) => {
+    try {
+      const users = await User.find();
+      res.send(users);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to fetch users" });
+    }
+  }
+);
+
 // Librarian orders
 app.get(
   "/api/orders/librarian",
@@ -249,6 +290,36 @@ app.get(
   async (req, res) => {
     const orders = await Order.find({}).populate("bookId");
     res.send(orders);
+  }
+);
+
+// POST /api/books
+app.post(
+  "/api/books",
+  verifyFirebaseToken,
+  verifyRole(["librarian", "admin"]),
+  async (req, res) => {
+    try {
+      const { title, author, description, price, image } = req.body;
+
+      // Fetch the user who is adding the book
+      const librarian = await User.findOne({ email: req.decoded.email });
+
+      const book = await Book.create({
+        title,
+        author,
+        description,
+        image,
+        price,
+        addedByName: addedByName || "Unknown",
+        addedByEmail: req.decoded.email,
+      });
+
+      res.send(book);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to add book" });
+    }
   }
 );
 
