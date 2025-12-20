@@ -10,7 +10,7 @@ const port = process.env.PORT || 3000;
 // ---------------- MIDDLEWARES ----------------
 app.use(
   cors({
-    origin: ["http://localhost:5173"], // তোমার frontend URL
+    origin: ["http://localhost:5173"],
     credentials: true,
   })
 );
@@ -31,11 +31,21 @@ async function connectDB() {
 
 // ---------------- SCHEMAS ----------------
 
-// USER SCHEMA
+// USER SCHEMA (UPDATED)
 const userSchema = new mongoose.Schema({
   name: { type: String, default: "User" },
   email: { type: String, required: true, unique: true },
-  role: { type: String, enum: ["user", "librarian", "admin"], default: "user" },
+  photoURL: String,
+  provider: {
+    type: String,
+    enum: ["email", "google"],
+    default: "email",
+  },
+  role: {
+    type: String,
+    enum: ["user", "librarian", "admin"],
+    default: "user",
+  },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -72,7 +82,11 @@ const orderSchema = new mongoose.Schema({
     enum: ["pending", "completed", "cancelled"],
     default: "pending",
   },
-  paymentStatus: { type: String, enum: ["unpaid", "paid"], default: "unpaid" },
+  paymentStatus: {
+    type: String,
+    enum: ["unpaid", "paid"],
+    default: "unpaid",
+  },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -87,24 +101,27 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // ---------------- ROUTES ----------------
 app.get("/", (req, res) => res.send("📚 BookCourier Backend Running"));
 
-// -------- USERS --------
+// ================= USERS =================
 
-// Register / Add User
+// ✅ Google + Email User Save (Unified)
 app.post("/api/users", async (req, res) => {
-  const { name, email, role } = req.body;
+  const { name, email, photoURL, provider } = req.body;
+
   if (!email) return res.status(400).send({ error: "Email is required" });
 
   try {
-    let existing = await User.findOne({ email });
-    if (existing) return res.send(existing);
+    const existingUser = await User.findOne({ email });
+    if (existingUser) return res.send(existingUser);
 
     const user = new User({
       name: name || "User",
       email,
-      role: role || "user",
+      photoURL,
+      provider: provider || "email",
     });
+
     const result = await user.save();
-    res.send(result);
+    res.status(201).send(result);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
@@ -132,7 +149,6 @@ app.get("/api/users", async (req, res) => {
 
 // Update user role
 app.patch("/api/users/:id", async (req, res) => {
-  const { id } = req.params;
   const { role } = req.body;
 
   if (!["user", "librarian", "admin"].includes(role))
@@ -140,131 +156,78 @@ app.patch("/api/users/:id", async (req, res) => {
 
   try {
     const updatedUser = await User.findByIdAndUpdate(
-      id,
+      req.params.id,
       { role },
       { new: true }
     );
-    if (!updatedUser) return res.status(404).send({ error: "User not found" });
     res.send(updatedUser);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
 
-// -------- BOOKS --------
+// ================= BOOKS =================
 app.get("/api/books", async (req, res) => {
-  try {
-    const books = await Book.find({ status: "published" });
-    res.send(books);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const books = await Book.find({ status: "published" });
+  res.send(books);
 });
 
 app.get("/api/books/:id", async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id))
-    return res.status(400).send({ error: "Invalid Book ID" });
-  try {
-    const book = await Book.findById(req.params.id);
-    if (!book) return res.status(404).send({ error: "Book not found" });
-    res.send(book);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const book = await Book.findById(req.params.id);
+  res.send(book);
 });
 
-// Add Book
 app.post("/api/books", async (req, res) => {
-  try {
-    const book = new Book(req.body);
-    const result = await book.save();
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const result = await new Book(req.body).save();
+  res.send(result);
 });
 
-// Update Book
 app.patch("/api/books/:id", async (req, res) => {
-  try {
-    const updatedBook = await Book.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    });
-    res.send(updatedBook);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const result = await Book.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+  });
+  res.send(result);
 });
 
-// Delete Book
 app.delete("/api/books/:id", async (req, res) => {
-  try {
-    const deletedBook = await Book.findByIdAndDelete(req.params.id);
-    if (deletedBook) await Order.deleteMany({ bookId: req.params.id });
-    res.send({ message: "Book and related orders deleted" });
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  await Book.findByIdAndDelete(req.params.id);
+  await Order.deleteMany({ bookId: req.params.id });
+  res.send({ message: "Book & orders deleted" });
 });
 
-// -------- ORDERS --------
+// ================= ORDERS =================
 app.post("/api/orders", async (req, res) => {
-  try {
-    const order = new Order(req.body);
-    const result = await order.save();
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const result = await new Order(req.body).save();
+  res.send(result);
 });
 
-// Get user orders
 app.get("/api/orders/user/:email", async (req, res) => {
-  try {
-    const orders = await Order.find({ email: req.params.email });
-    res.send(orders);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const orders = await Order.find({ email: req.params.email });
+  res.send(orders);
 });
 
-// Update order (status / payment)
 app.patch("/api/orders/:id", async (req, res) => {
-  try {
-    const updatedOrder = await Order.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
+  const updatedOrder = await Order.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+  });
 
-    if (req.body.paymentStatus === "paid" && req.body.status === "completed") {
-      await Book.findByIdAndUpdate(updatedOrder.bookId, {
-        $inc: { quantity: -1 },
-      });
-    }
-
-    res.send(updatedOrder);
-  } catch (err) {
-    res.status(500).send({ error: err.message });
+  if (req.body.paymentStatus === "paid") {
+    await Book.findByIdAndUpdate(updatedOrder.bookId, {
+      $inc: { quantity: -1 },
+    });
   }
+
+  res.send(updatedOrder);
 });
 
-// -------- STRIPE PAYMENT --------
+// ================= STRIPE =================
 app.post("/api/create-payment-intent", async (req, res) => {
-  const { amount } = req.body;
-  if (!amount || amount <= 0)
-    return res.status(400).send({ error: "Invalid amount" });
-
-  try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount,
-      currency: "usd",
-      automatic_payment_methods: { enabled: true },
-    });
-    res.send({ clientSecret: paymentIntent.client_secret });
-  } catch (err) {
-    res.status(500).send({ error: err.message });
-  }
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: req.body.amount,
+    currency: "usd",
+    automatic_payment_methods: { enabled: true },
+  });
+  res.send({ clientSecret: paymentIntent.client_secret });
 });
 
 // ---------------- START SERVER ----------------
