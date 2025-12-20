@@ -81,7 +81,7 @@ const orderSchema = new mongoose.Schema({
   price: Number,
   status: {
     type: String,
-    enum: ["pending", "completed", "cancelled"],
+    enum: ["pending", "shipped", "delivered", "cancelled"],
     default: "pending",
   },
   paymentStatus: { type: String, enum: ["unpaid", "paid"], default: "unpaid" },
@@ -104,6 +104,7 @@ const verifyFirebaseToken = async (req, res, next) => {
     req.decoded = decoded;
     next();
   } catch (err) {
+    console.error(err);
     res.status(403).send({ error: "Forbidden" });
   }
 };
@@ -111,14 +112,14 @@ const verifyFirebaseToken = async (req, res, next) => {
 // ---------------- ROLE MIDDLEWARE ----------------
 const verifyAdmin = async (req, res, next) => {
   const user = await User.findOne({ email: req.decoded.email });
-  if (user?.role !== "admin")
+  if (!user || user.role !== "admin")
     return res.status(403).send({ error: "Admin only" });
   next();
 };
 
 const verifyLibrarian = async (req, res, next) => {
   const user = await User.findOne({ email: req.decoded.email });
-  if (!["librarian", "admin"].includes(user?.role))
+  if (!user || !["librarian", "admin"].includes(user.role))
     return res.status(403).send({ error: "Librarian only" });
   next();
 };
@@ -126,7 +127,7 @@ const verifyLibrarian = async (req, res, next) => {
 // ---------------- ROUTES ----------------
 app.get("/", (req, res) => res.send("📚 BookCourier Backend Running"));
 
-// ================= USERS =================
+// ===== USERS =====
 app.post("/api/users", async (req, res) => {
   const { name, email, photoURL, provider } = req.body;
   if (!email) return res.status(400).send({ error: "Email is required" });
@@ -148,16 +149,13 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
+// Get user by email
 app.get("/api/users/:email", verifyFirebaseToken, async (req, res) => {
   const user = await User.findOne({ email: req.params.email });
   res.send(user);
 });
 
-app.get("/api/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
-  const users = await User.find();
-  res.send(users);
-});
-
+// Update user role (admin only)
 app.patch(
   "/api/users/:id",
   verifyFirebaseToken,
@@ -176,15 +174,21 @@ app.patch(
   }
 );
 
-// ================= BOOKS =================
+// ===== BOOKS =====
 app.get("/api/books", async (req, res) => {
   const books = await Book.find({ status: "published" });
   res.send(books);
 });
 
 app.get("/api/books/:id", async (req, res) => {
-  const book = await Book.findById(req.params.id);
-  res.send(book);
+  try {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).send({ error: "Book not found" });
+    res.send(book);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Server error" });
+  }
 });
 
 app.post(
@@ -195,6 +199,7 @@ app.post(
     const result = await new Book({
       ...req.body,
       addedByEmail: req.decoded.email,
+      addedByName: req.decoded.name || "Librarian",
     }).save();
     res.send(result);
   }
@@ -212,28 +217,55 @@ app.patch(
   }
 );
 
-app.delete(
-  "/api/books/:id",
-  verifyFirebaseToken,
-  verifyAdmin,
-  async (req, res) => {
-    await Book.findByIdAndDelete(req.params.id);
-    await Order.deleteMany({ bookId: req.params.id });
-    res.send({ message: "Book & orders deleted" });
-  }
-);
-
-// ================= ORDERS =================
-app.post("/api/orders", verifyFirebaseToken, async (req, res) => {
-  const result = await new Order(req.body).save();
-  res.send(result);
-});
-
+// ===== ORDERS =====
+// Normal user orders
 app.get("/api/orders/user/:email", verifyFirebaseToken, async (req, res) => {
   const orders = await Order.find({ email: req.params.email });
   res.send(orders);
 });
 
+// Librarian sees orders for their books
+app.get(
+  "/api/orders/librarian",
+  verifyFirebaseToken,
+  verifyLibrarian,
+  async (req, res) => {
+    const orders = await Order.find({}).populate("bookId");
+    const librarianOrders = orders.filter(
+      (o) => o.bookId.addedByEmail === req.decoded.email
+    );
+    res.send(librarianOrders);
+  }
+);
+
+// Admin sees all orders
+app.get(
+  "/api/orders/admin",
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    const orders = await Order.find({}).populate("bookId");
+    res.send(orders);
+  }
+);
+
+// Place order (user only)
+app.post("/api/orders", verifyFirebaseToken, async (req, res) => {
+  const user = await User.findOne({ email: req.decoded.email });
+  if (!user || user.role !== "user")
+    return res
+      .status(403)
+      .send({ error: "Only normal users can place orders" });
+
+  const result = await new Order({
+    ...req.body,
+    name: user.name,
+    email: user.email,
+  }).save();
+  res.send(result);
+});
+
+// Update order (cancel, status, payment)
 app.patch("/api/orders/:id", verifyFirebaseToken, async (req, res) => {
   const updatedOrder = await Order.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
@@ -246,17 +278,26 @@ app.patch("/api/orders/:id", verifyFirebaseToken, async (req, res) => {
   res.send(updatedOrder);
 });
 
-// ================= STRIPE =================
+// ===== STRIPE =====
 app.post(
   "/api/create-payment-intent",
   verifyFirebaseToken,
   async (req, res) => {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: req.body.amount,
-      currency: "usd",
-      automatic_payment_methods: { enabled: true },
-    });
-    res.send({ clientSecret: paymentIntent.client_secret });
+    try {
+      const { amount } = req.body;
+      if (!amount || amount <= 0)
+        return res.status(400).send({ error: "Invalid amount" });
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount,
+        currency: "usd",
+        automatic_payment_methods: { enabled: true },
+      });
+      res.send({ clientSecret: paymentIntent.client_secret });
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Stripe payment intent creation failed" });
+    }
   }
 );
 
