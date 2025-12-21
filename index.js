@@ -39,6 +39,14 @@ admin.initializeApp({
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 /* ================= SCHEMAS ================= */
+const wishlistSchema = new mongoose.Schema({
+  userId: { type: String, required: true }, // Firebase UID
+  bookId: { type: mongoose.Schema.Types.ObjectId, ref: "Book", required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Wishlist = mongoose.model("Wishlist", wishlistSchema);
+
 const userSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
@@ -55,6 +63,7 @@ const bookSchema = new mongoose.Schema({
   description: String,
   image: String,
   price: Number,
+  category: String,
   status: {
     type: String,
     enum: ["published", "unpublished"],
@@ -62,6 +71,13 @@ const bookSchema = new mongoose.Schema({
   },
   addedByEmail: String,
   addedByName: String,
+  reviews: [
+    {
+      userEmail: String, // review দিলে কোন user submit করল
+      rating: Number, // star rating
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -210,7 +226,32 @@ app.patch(
   }
 );
 
+// Submit a review
+app.post("/api/books/:id/reviews", verifyFirebaseToken, verifyRole(["user"]), async (req, res) => {
+  try {
+    const { rating, comment } = req.body;
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).send({ error: "Book not found" });
+
+    const review = {
+      userEmail: req.decoded.email,
+      rating,
+      comment,
+    };
+
+    book.reviews.push(review);
+    await book.save();
+
+    res.status(201).send(review);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Failed to submit review" });
+  }
+});
+
+
 /* ================= ORDERS ================= */
+
 
 // User orders
 app.get(
@@ -311,6 +352,7 @@ app.post(
         description,
         image,
         price,
+        category,
         addedByName: addedByName || "Unknown",
         addedByEmail: req.decoded.email,
       });
@@ -356,6 +398,77 @@ app.patch("/api/orders/:id", verifyFirebaseToken, async (req, res) => {
   });
   res.send(updatedOrder);
 });
+
+/* ================= WISHLIST ================= */
+
+// Add to wishlist
+app.post(
+  "/api/wishlist",
+  verifyFirebaseToken,
+  verifyRole(["user"]),
+  async (req, res) => {
+    try {
+      const { bookId } = req.body;
+      const existing = await Wishlist.findOne({
+        userId: req.decoded.uid,
+        bookId,
+      });
+      if (existing)
+        return res.status(400).send({ error: "Book already in wishlist" });
+
+      const wishlistItem = await Wishlist.create({
+        userId: req.decoded.uid,
+        bookId,
+      });
+
+      res.send(wishlistItem);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to add to wishlist" });
+    }
+  }
+);
+
+// Get user's wishlist
+app.get(
+  "/api/wishlist",
+  verifyFirebaseToken,
+  verifyRole(["user"]),
+  async (req, res) => {
+    try {
+      const wishlist = await Wishlist.find({
+        userId: req.decoded.uid,
+      }).populate("bookId");
+      res.send(wishlist);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to fetch wishlist" });
+    }
+  }
+);
+
+// Remove from wishlist
+app.delete(
+  "/api/wishlist/:id",
+  verifyFirebaseToken,
+  verifyRole(["user"]),
+  async (req, res) => {
+    try {
+      const wishlistItem = await Wishlist.findById(req.params.id);
+      if (!wishlistItem)
+        return res.status(404).send({ error: "Wishlist item not found" });
+
+      if (wishlistItem.userId !== req.decoded.uid)
+        return res.status(403).send({ error: "Forbidden" });
+
+      await wishlistItem.deleteOne();
+      res.send({ message: "Removed from wishlist" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to remove wishlist item" });
+    }
+  }
+);
 
 /* ================= STRIPE ================= */
 app.post(
