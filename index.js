@@ -10,10 +10,7 @@ const port = process.env.PORT || 3000;
 
 /* ================= MIDDLEWARE ================= */
 app.use(
-  cors({
-    origin: ["http://localhost:5173"],
-    credentials: true,
-  })
+  cors()
 );
 app.use(express.json());
 
@@ -27,12 +24,13 @@ mongoose
   });
 
 /* ================= FIREBASE ADMIN ================= */
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
+
 admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  }),
+  credential: admin.credential.cert(serviceAccount),
 });
 
 /* ================= STRIPE ================= */
@@ -242,31 +240,34 @@ app.patch(
 );
 
 // Submit a review
-app.post("/api/books/:id/reviews", verifyFirebaseToken, verifyRole(["user"]), async (req, res) => {
-  try {
-    const { rating, comment } = req.body;
-    const book = await Book.findById(req.params.id);
-    if (!book) return res.status(404).send({ error: "Book not found" });
+app.post(
+  "/api/books/:id/reviews",
+  verifyFirebaseToken,
+  verifyRole(["user"]),
+  async (req, res) => {
+    try {
+      const { rating, comment } = req.body;
+      const book = await Book.findById(req.params.id);
+      if (!book) return res.status(404).send({ error: "Book not found" });
 
-    const review = {
-      userEmail: req.decoded.email,
-      rating,
-      comment,
-    };
+      const review = {
+        userEmail: req.decoded.email,
+        rating,
+        comment,
+      };
 
-    book.reviews.push(review);
-    await book.save();
+      book.reviews.push(review);
+      await book.save();
 
-    res.status(201).send(review);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: "Failed to submit review" });
+      res.status(201).send(review);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to submit review" });
+    }
   }
-});
-
+);
 
 /* ================= ORDERS ================= */
-
 
 // User orders
 app.get(
