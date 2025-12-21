@@ -185,6 +185,21 @@ app.get(
     res.send(books);
   }
 );
+// GET all books for librarian/admin
+app.get(
+  "/api/books/all",
+  verifyFirebaseToken,
+  verifyRole(["librarian", "admin"]),
+  async (req, res) => {
+    try {
+      const books = await Book.find({}); // filter নাই, সব books
+      res.send(books);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ error: "Failed to fetch books" });
+    }
+  }
+);
 
 // Public books
 app.get("/api/books", async (req, res) => {
